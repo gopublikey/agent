@@ -154,6 +154,10 @@ impl ApiClient {
                 error!("Agent version check failed with HTTP 426 but could not parse response");
                 return Err(anyhow!("Agent version too old. Please update the agent."));
             }
+        } else if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            // Handle HTTP 405 - Host is deactivated
+            error!("Host is deactivated on the PubliKey server");
+            return Err(anyhow!("This host has been deactivated on the PubliKey server. Please contact your administrator."));
         } else {
             // Try to parse as error response first
             if let Ok(error_response) = serde_json::from_str::<AgentReportResponse>(&response_text) {
@@ -193,6 +197,10 @@ impl ApiClient {
             info!("Retrieved {} key assignments", assignment_count);
             
             Ok(parsed_response)
+        } else if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            // Handle HTTP 405 - Host is deactivated
+            error!("Host is deactivated on the PubliKey server");
+            Err(anyhow!("This host has been deactivated on the PubliKey server. Please contact your administrator."))
         } else {
             // Try to parse as error response first
             if let Ok(error_response) = serde_json::from_str::<KeyAssignmentsResponse>(&response_text) {
@@ -217,9 +225,10 @@ impl ApiClient {
                 Err(e) => {
                     let error_msg = e.to_string();
                     
-                    // Don't retry on version errors (HTTP 426) - these won't resolve with retries
-                    if error_msg.contains("Agent version") && error_msg.contains("too old") {
-                        error!("Version error detected - not retrying: {}", error_msg);
+                    // Don't retry on version errors (HTTP 426) or deactivated host errors (HTTP 405) - these won't resolve with retries
+                    if (error_msg.contains("Agent version") && error_msg.contains("too old")) || 
+                       error_msg.contains("deactivated") {
+                        error!("Non-retryable error detected - not retrying: {}", error_msg);
                         return Err(e);
                     }
                     
