@@ -1,6 +1,8 @@
 use serde::Serialize;
 use sysinfo::System;
 use anyhow::Result;
+use tracing::{debug, warn};
+use std::fs;
 
 #[derive(Serialize, Debug)]
 pub struct SystemInfo {
@@ -10,6 +12,8 @@ pub struct SystemInfo {
     pub kernel: String,
     pub distribution: String,
     pub version: String,
+    #[serde(rename = "sshPort")]
+    pub ssh_port: Option<u16>,
 }
 
 
@@ -32,6 +36,51 @@ fn get_linux_distribution() -> Option<String> {
     }
 
     None
+}
+
+fn detect_ssh_port() -> Option<u16> {
+    // Default SSH port
+    let mut port = 22u16;
+    
+    // Try to read sshd_config to find custom port
+    let sshd_config_paths = [
+        "/etc/ssh/sshd_config",
+        "/etc/sshd_config", 
+        "/usr/local/etc/ssh/sshd_config",
+    ];
+    
+    for config_path in &sshd_config_paths {
+        if let Ok(content) = fs::read_to_string(config_path) {
+            debug!("Reading SSH config from: {}", config_path);
+            
+            for line in content.lines() {
+                let line = line.trim();
+                
+                // Skip comments and empty lines
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                
+                // Look for Port directive
+                if let Some(port_line) = line.strip_prefix("Port ") {
+                    if let Ok(parsed_port) = port_line.trim().parse::<u16>() {
+                        debug!("Found SSH port in config: {}", parsed_port);
+                        port = parsed_port;
+                        break;
+                    }
+                }
+            }
+            break; // Stop after reading the first available config file
+        }
+    }
+    
+    // Verify the port is reasonable (1-65535)
+    if port > 0 {
+        Some(port)
+    } else {
+        warn!("Invalid SSH port detected: {}, defaulting to 22", port);
+        Some(22)
+    }
 }
 
 pub fn collect_system_info() -> Result<SystemInfo> {
@@ -63,6 +112,8 @@ pub fn collect_system_info() -> Result<SystemInfo> {
         }
     };
 
+    let ssh_port = detect_ssh_port();
+
     Ok(SystemInfo {
         os: os_name,
         arch,
@@ -70,6 +121,7 @@ pub fn collect_system_info() -> Result<SystemInfo> {
         kernel: kernel_version,
         distribution,
         version: os_version,
+        ssh_port,
     })
 }
 
