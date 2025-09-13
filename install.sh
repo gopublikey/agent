@@ -5,7 +5,7 @@ set -e
 USER_MODE=false
 
 # Default values
-REPO="ruohki/agent"
+REPO="gopublikey/agent"
 TOKEN=""
 ENDPOINT=""
 EXCLUDE_USERS=""
