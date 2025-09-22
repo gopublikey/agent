@@ -44,6 +44,7 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.24'
+        cache: false
 
     - name: Get version from git tag
       id: version
@@ -90,6 +91,7 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: '1.24'
+        cache: false
 
     - name: Run tests
       run: go test -v ./...
