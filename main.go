@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	Version   = "0.8.0"
+	Version   = "0.8.1"
 	UserAgent = "PubliKey-Agent/" + Version
 )
 
