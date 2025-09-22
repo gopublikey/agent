@@ -388,8 +388,10 @@ func (a *Agent) getSystemUsers() ([]UserInfo, error) {
 				continue
 			}
 
-			// Skip system users (UID < 1000, except root)
-			if uid < 1000 && uid != 0 {
+			// Skip system users
+			// Include: root (UID 0) and regular users (UID 1000-60000)
+			// Exclude: system users (UID 1-999) and reserved UIDs (> 60000 like nobody:65534)
+			if uid != 0 && (uid < 1000 || uid > 60000) {
 				continue
 			}
 
