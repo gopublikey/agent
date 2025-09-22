@@ -86,6 +86,20 @@ type KeyAssignmentsResponse struct {
 	Timestamp   string          `json:"timestamp"`
 }
 
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Name    string `json:"name"`
+	Assets  []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
+}
+
+type UpdateConfig struct {
+	DryRun bool
+	Force  bool
+}
+
 type Agent struct {
 	config     *Config
 	logger     *log.Logger
@@ -107,6 +121,9 @@ func main() {
 			return
 		case "status":
 			handleStatusCommand()
+			return
+		case "update":
+			handleUpdateCommand()
 			return
 		}
 	}
@@ -712,6 +729,227 @@ func (a *Agent) makeAPIRequest(method, endpoint string, requestBody, responseBod
 	}
 
 	return errors.New("max retries exceeded")
+}
+
+// Update functions
+func getLatestRelease() (*GitHubRelease, error) {
+	url := "https://api.github.com/repos/gopublikey/agent/releases/latest"
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch latest release: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return nil, fmt.Errorf("failed to parse release data: %v", err)
+	}
+
+	return &release, nil
+}
+
+func compareVersions(current, latest string) (bool, error) {
+	// Remove 'v' prefix if present
+	current = strings.TrimPrefix(current, "v")
+	latest = strings.TrimPrefix(latest, "v")
+
+	// Simple string comparison for semantic versions
+	// In production, consider using a proper semver library
+	return current != latest, nil
+}
+
+func getAssetForCurrentPlatform(release *GitHubRelease) (string, string, error) {
+	// Determine the expected binary name for current platform
+	var expectedName string
+	switch runtime.GOOS {
+	case "linux":
+		switch runtime.GOARCH {
+		case "amd64":
+			expectedName = "pkagent-linux-x86_64"
+		case "arm64":
+			expectedName = "pkagent-linux-aarch64"
+		case "arm":
+			expectedName = "pkagent-linux-arm"
+		case "386":
+			expectedName = "pkagent-linux-i386"
+		default:
+			return "", "", fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
+		}
+	default:
+		return "", "", fmt.Errorf("PubliKey Agent only supports Linux. Current platform: %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+
+	// Find the matching asset
+	for _, asset := range release.Assets {
+		if asset.Name == expectedName {
+			return asset.Name, asset.BrowserDownloadURL, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("no binary found for platform %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+
+func downloadBinary(url, targetPath string) error {
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to download binary: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("download failed with status %d", resp.StatusCode)
+	}
+
+	file, err := os.Create(targetPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %v", err)
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write file: %v", err)
+	}
+
+	// Make executable
+	if err := os.Chmod(targetPath, 0755); err != nil {
+		return fmt.Errorf("failed to set executable permissions: %v", err)
+	}
+
+	return nil
+}
+
+func getCurrentBinaryPath() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to get executable path: %v", err)
+	}
+	return filepath.EvalSymlinks(executable)
+}
+
+func updateBinary(downloadURL, tempPath string, dryRun bool) error {
+	currentPath, err := getCurrentBinaryPath()
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		log.Printf("[DRY-RUN] Would download %s to %s", downloadURL, tempPath)
+		log.Printf("[DRY-RUN] Would replace %s with new binary", currentPath)
+		return nil
+	}
+
+	// Download to temporary file
+	log.Printf("Downloading update from %s...", downloadURL)
+	if err := downloadBinary(downloadURL, tempPath); err != nil {
+		return err
+	}
+
+	// Verify the downloaded binary
+	log.Printf("Verifying downloaded binary...")
+	cmd := exec.Command(tempPath, "--version")
+	if err := cmd.Run(); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("downloaded binary failed verification: %v", err)
+	}
+
+	// Replace current binary
+	log.Printf("Replacing current binary at %s...", currentPath)
+	if err := os.Rename(tempPath, currentPath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to replace binary: %v", err)
+	}
+
+	return nil
+}
+
+func handleUpdateCommand() {
+	updateCmd := flag.NewFlagSet("update", flag.ExitOnError)
+
+	config := &UpdateConfig{}
+	updateCmd.BoolVar(&config.DryRun, "dry-run", false, "Show what would be done without making changes")
+	updateCmd.BoolVar(&config.Force, "force", false, "Force update even if versions are the same")
+
+	updateCmd.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Update PubliKey Agent to the latest version\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s update [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		updateCmd.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		fmt.Fprintf(os.Stderr, "  # Check for and install updates\n")
+		fmt.Fprintf(os.Stderr, "  %s update\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Check what would be updated without installing\n")
+		fmt.Fprintf(os.Stderr, "  %s update --dry-run\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Force update even if versions are the same\n")
+		fmt.Fprintf(os.Stderr, "  %s update --force\n\n", os.Args[0])
+	}
+
+	updateCmd.Parse(os.Args[2:])
+
+	log.Printf("PubliKey Agent Updater")
+	log.Printf("Current version: %s", Version)
+
+	// Get latest release from GitHub
+	log.Printf("Checking for updates...")
+	release, err := getLatestRelease()
+	if err != nil {
+		log.Fatalf("Failed to check for updates: %v", err)
+	}
+
+	log.Printf("Latest version: %s", release.TagName)
+
+	// Compare versions
+	needsUpdate, err := compareVersions(Version, release.TagName)
+	if err != nil {
+		log.Fatalf("Failed to compare versions: %v", err)
+	}
+
+	if !needsUpdate && !config.Force {
+		log.Printf("Already running the latest version (%s)", Version)
+		return
+	}
+
+	if config.Force {
+		log.Printf("Force update requested")
+	} else {
+		log.Printf("Update available: %s -> %s", Version, release.TagName)
+	}
+
+	// Get download URL for current platform
+	assetName, downloadURL, err := getAssetForCurrentPlatform(release)
+	if err != nil {
+		log.Fatalf("Failed to find binary for current platform: %v", err)
+	}
+
+	log.Printf("Found binary: %s", assetName)
+
+	// Create temporary file for download
+	tempDir := "/tmp"
+	if config.DryRun {
+		tempDir = "/tmp" // Keep simple for dry run
+	}
+	tempPath := filepath.Join(tempDir, "pkagent-update-"+strconv.FormatInt(time.Now().Unix(), 10))
+
+	// Perform the update
+	if err := updateBinary(downloadURL, tempPath, config.DryRun); err != nil {
+		log.Fatalf("Update failed: %v", err)
+	}
+
+	if config.DryRun {
+		log.Printf("[DRY-RUN] Update process completed successfully")
+		log.Printf("[DRY-RUN] Would have updated from %s to %s", Version, release.TagName)
+	} else {
+		log.Printf("Update completed successfully!")
+		log.Printf("Updated from %s to %s", Version, release.TagName)
+		log.Printf("Please restart any running services to use the new version")
+	}
 }
 
 // Install command handlers
