@@ -125,7 +125,7 @@ func (i *Installer) checkPermissions() error {
 	} else {
 		// System mode: check if running as root
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("system mode installation requires root privileges (use sudo)")
+			return fmt.Errorf("system mode installation requires root privileges.\n\nOptions:\n  1. Run with sudo: sudo ./pkagent install --token=%s --endpoint=%s\n  2. Install in user mode: ./pkagent install --token=%s --endpoint=%s --user-mode", i.config.Token, i.config.Endpoint, i.config.Token, i.config.Endpoint)
 		}
 	}
 	return nil

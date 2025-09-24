@@ -17,9 +17,20 @@ git_tag_and_push() {
     local version="$1"
     local tag="v$version"
 
-    echo "Committing version change..."
-    git add "$MAIN_GO"
-    git commit -m "chore: bump version to $version"
+    # Check if there are uncommitted changes to main.go
+    if git diff --quiet "$MAIN_GO" && git diff --cached --quiet "$MAIN_GO"; then
+        echo "No version changes to commit"
+    else
+        echo "Committing version change..."
+        git add "$MAIN_GO"
+        git commit -m "chore: bump version to $version"
+    fi
+
+    # Check if tag already exists
+    if git tag -l | grep -q "^$tag$"; then
+        echo "Tag $tag already exists, skipping tag creation"
+        return 0
+    fi
 
     echo "Creating and pushing tag $tag..."
     git tag "$tag"
